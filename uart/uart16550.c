@@ -51,6 +51,39 @@ struct wait_list_element {
     struct task_struct* task;
 };
 
+static void wake_one_task_up(struct list_head *head) {
+    struct wait_list_element *task;
+
+    task = list_first_entry(head, struct wait_list_element, list);
+
+    list_del(&task->list);
+
+    kfree(task);
+}
+
+static int put_current_task_to_sleep(struct list_head* head,
+                                     struct spinlock_t *lock) {
+    unsigned long flags;
+
+    sleeping_task = kmalloc(sizeof(struct wait_list_element), GFP_KERNEL);
+
+    if (sleeping_task == NULL) {
+        dprintk("Could not add process to wait_list!\n");
+        return -ENOMEM;
+    }
+
+    spin_lock_irqsave(lock, flags);
+
+    sleeping_task->task = current;
+
+    list_add_tail(&sleeping_task->list, head);
+
+    spin_unlock_irqrestore(lock, flags);
+
+    set_current_state(TASK_INTERRUPTIBLE);
+    schedule();
+}
+
 static int uart16550_open(struct inode* inode, struct file *filep) {
     int minor = iminor(inode);
 
@@ -82,23 +115,10 @@ static int uart16550_read(struct file *file, char* user_buffer,
 
     device_port = (device == &com1_dev) ? COM1_BASEPORT : COM2_BASEPORT;
 
-    dprintk("Reading from device at %x\n", device_port);
-
     if (kfifo_is_empty(&device->inbuffer)) {
         dprintk("No data available! Sleeping...\n");
-
-        sleeping_task = kmalloc(sizeof(struct wait_list_element), GFP_KERNEL);
-
-        if (sleeping_task == NULL) {
-            dprintk("Could not add process to wait_list!\n");
-            return -ENOMEM;
-        }
-
-        sleeping_task->task = current;
-        list_add_tail(&sleeping_task->list, &device->read_wait_list);
-
-        set_current_state(TASK_INTERRUPTIBLE);
-        schedule();
+        put_current_task_to_sleep(&device->read_wait_list,
+                                  &device->input_lock);
     }
 
     actual_size = min(kfifo_len(&device->inbuffer), size);
@@ -124,13 +144,7 @@ static int uart16550_read(struct file *file, char* user_buffer,
 
     kfree(buffer);
 
-    if (rc == 0) {
-        rc = put_user(actual_size, offset);
-    } else {
-        put_user(actual_size, offset);
-    }
-
-    return rc;
+    return actual_size;
 }
 
 static int uart16550_write(struct file *file, const char *user_buffer,
@@ -138,6 +152,9 @@ static int uart16550_write(struct file *file, const char *user_buffer,
 {
     int bytes_copied = 0;
     uint32_t device_port;
+    unsigned long irq_flags = 0;
+    char *buffer;
+    size_t actual_size;
 
     struct com_dev* device = file->private_data;
 
@@ -151,19 +168,28 @@ static int uart16550_write(struct file *file, const char *user_buffer,
         return -ENOENT;
     }
 
-    dprintk("Writing to device at %x\n", device_port);
-
     if (kfifo_is_full(&device->inbuffer)) {
-        //TODO: put current process to sleep
+        //TODO: put process to sleep until we can write at least one byte
+        dprintk("Outbound buffer is full!\n");
+        return -ENOBUFS;
     }
 
-    /*
-     * TODO: Write the code that takes the data provided by the
-     *      user from userspace and stores it in the kernel
-     *      device outgoing buffer.
-     * TODO: Populate bytes_copied with the number of bytes
-     *      that fit in the outgoing buffer.
-     */
+    actual_size = min(size, kfifo_avail(&device->outbuffer));
+
+    buffer = kmalloc(sizeof(char) * actual_size, GFP_KERNEL);
+
+    if (buffer == NULL) {
+        dprintk("Unable to allocate memory for temporary storage!\n");
+        return -ENOMEM;
+    }
+
+    spin_lock_irqsave(&device->output_lock, irq_flags);
+
+    bytes_copied = kfifo_in(&device->outbuffer, buffer, actual_size);
+
+    spin_unlock_irqrestore(&device->output_lock, irq_flags);
+
+    kfree(buffer);
 
     uart16550_hw_force_interrupt_reemit(device_port);
 
@@ -178,49 +204,57 @@ static int uart16550_release(struct inode* inode, struct file* file) {
 irqreturn_t interrupt_handler(int irq_no, void *data)
 {
     int device_status;
+    int device_num;
     uint32_t device_port;
     struct com_dev *device;
     struct wait_list_element *head;
 
-    /*
-     * TODO: Write the code that handles a hardware interrupt.
-     * TODO: Populate device_port with the port of the correct device.
-     */
+    dprintk("Handling IRQ %d\n", irq_no);
 
+    device_num = (irq_no == COM1_IRQ) ? 1 : 2;
     device_port = (irq_no == COM1_IRQ) ? COM1_BASEPORT : COM2_BASEPORT;
     device = (irq_no == COM1_IRQ) ? &com1_dev : &com2_dev;
 
     device_status = uart16550_hw_get_device_status(device_port);
 
-    while (uart16550_hw_device_can_send(device_status)) {
+    spin_lock(&device->output_lock);
+
+    while (uart16550_hw_device_can_send(device_status)
+           && !kfifo_is_empty(&device->outbuffer)) {
         uint8_t byte_value = 0;
-        /*
-         * TODO: Populate byte_value with the next value
-         *      from the kernel device outgoing buffer.
-         */
+
+        if (kfifo_get(&device->outbuffer, &byte_value) == 0) {
+            dprintk("No more data to write to device COM%d\n", device_num);
+            break;
+        }
+
+        wake_one_task_up(&device->write_wait_list);
+
+        dprintk("Written %d to COM%d\n", byte_value, device_num);
+
         uart16550_hw_write_to_device(device_port, byte_value);
         device_status = uart16550_hw_get_device_status(device_port);
     }
 
+    spin_unlock(&device->output_lock);
+
+    spin_lock(&device->input_lock);
+
     while (uart16550_hw_device_has_data(device_status)) {
         uint8_t byte_value = 0;
+
         byte_value = uart16550_hw_read_from_device(device_port);
 
-        spin_lock(&device->input_lock);
+        dprintk("Read %d from COM%d\n", byte_value, device_num);
+
         kfifo_put(&device->inbuffer, byte_value);
 
-        while (!list_empty(&device->read_wait_list)) {
-            head = list_first_entry(&device->read_wait_list,
-                                    struct wait_list_element, list);
-            wake_up_process(head->task);
-            list_del(&head->list);
-            kfree(head);
-        }
-
-        spin_unlock(&device->input_lock);
+        wake_one_task_up(&device->read_wait_list);
 
         device_status = uart16550_hw_get_device_status(device_port);
     }
+
+    spin_unlock(&device->input_lock);
 
     return IRQ_HANDLED;
 }
@@ -254,7 +288,6 @@ static int uart16550_init(void)
     struct device *com1, *com2;
     int have_com1 = behavior & OPTION_COM1, have_com2 = behavior & OPTION_COM2;
     int rc_com1 = 0, rc_com2 = 0;
-    int rc;
 
     dprintk("Loading module...\n");
     /*
@@ -283,17 +316,17 @@ static int uart16550_init(void)
             return rc_com1;
         }
 
-        /* rc_com1 = request_irq(COM1_IRQ, interrupt_handler, IRQF_SHARED, */
-        /*                       "com1", NULL); */
+        rc_com1 = request_irq(COM1_IRQ, interrupt_handler, IRQF_SHARED,
+                              "com1", &com1_dev);
 
-        /* if (rc_com1 != 0) { */
-        /*     dprintk("Could not register interrupt handler for COM1: %d\n", */
-        /*             rc_com1); */
-        /*     uart16550_hw_cleanup_device(COM1_BASEPORT); */
-        /*     device_destroy(uart16550_class, MKDEV(major, 0)); */
-        /*     cdev_del(&com1_dev.cdev); */
-        /*     return rc_com1; */
-        /* } */
+        if (rc_com1 != 0) {
+            dprintk("Could not register interrupt handler for COM1: %d\n",
+                    rc_com1);
+            uart16550_hw_cleanup_device(COM1_BASEPORT);
+            device_destroy(uart16550_class, MKDEV(major, 0));
+            cdev_del(&com1_dev.cdev);
+            return rc_com1;
+        }
     }
 
     if (have_com2) {
@@ -318,15 +351,15 @@ static int uart16550_init(void)
             return -1;
         }
 
-        /* rc_com2 = request_irq(COM2_IRQ, interrupt_handler, IRQF_SHARED, */
-        /*                       "com2", NULL); */
+        rc_com2 = request_irq(COM2_IRQ, interrupt_handler, IRQF_SHARED,
+                              "com2", &com2_dev);
 
-        /* if (rc_com2 != 0) { */
-        /*     uart16550_hw_cleanup_device(COM2_BASEPORT); */
-        /*     device_destroy(uart16550_class, MKDEV(major, 1)); */
-        /*     cdev_del(&com2_dev.cdev); */
-        /*     return rc_com2; */
-        /* } */
+        if (rc_com2 != 0) {
+            uart16550_hw_cleanup_device(COM2_BASEPORT);
+            device_destroy(uart16550_class, MKDEV(major, 1));
+            cdev_del(&com2_dev.cdev);
+            return rc_com2;
+        }
     }
 
     return 0;
@@ -340,6 +373,9 @@ static void uart16550_cleanup(void)
      * TODO: have_com1 & have_com2 need to be set according to the
      *      module parameters.
      */
+
+    dprintk("Unloading uart16550 module...\n");
+
     if (have_com1) {
         cdev_del(&com1_dev.cdev);
         /* Reset the hardware device for COM1 */
@@ -347,7 +383,8 @@ static void uart16550_cleanup(void)
         /* Remove the sysfs info for /dev/com1 */
         device_destroy(uart16550_class, MKDEV(major, 0));
 
-        free_irq(COM1_IRQ, NULL);
+        dprintk("Deregistering COM1_IRQ\n");
+        free_irq(COM1_IRQ, &com1_dev);
     }
     if (have_com2) {
         cdev_del(&com2_dev.cdev);
@@ -355,6 +392,10 @@ static void uart16550_cleanup(void)
         uart16550_hw_cleanup_device(COM2_BASEPORT);
         /* Remove the sysfs info for /dev/com2 */
         device_destroy(uart16550_class, MKDEV(major, 1));
+
+        dprintk("Deregistering COM2_IRQ\n");
+
+        free_irq(COM2_IRQ, &com2_dev);
     }
 
     /*

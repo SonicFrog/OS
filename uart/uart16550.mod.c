@@ -24,29 +24,30 @@ __attribute__((section("__versions"))) = {
 	{ 0x4993e7aa, __VMLINUX_SYMBOL_STR(class_unregister) },
 	{ 0xa475c139, __VMLINUX_SYMBOL_STR(cdev_del) },
 	{ 0x188c027c, __VMLINUX_SYMBOL_STR(device_destroy) },
+	{ 0xd6b8e852, __VMLINUX_SYMBOL_STR(request_threaded_irq) },
 	{ 0x8ad9a685, __VMLINUX_SYMBOL_STR(device_create) },
 	{ 0x22f068d1, __VMLINUX_SYMBOL_STR(__class_create) },
-	{ 0x3b801fc9, __VMLINUX_SYMBOL_STR(_raw_spin_unlock) },
 	{ 0x2a4b3dfe, __VMLINUX_SYMBOL_STR(wake_up_process) },
+	{ 0x3b801fc9, __VMLINUX_SYMBOL_STR(_raw_spin_unlock) },
 	{ 0xc4be9d8c, __VMLINUX_SYMBOL_STR(_raw_spin_lock) },
-	{ 0xadf42bd5, __VMLINUX_SYMBOL_STR(__request_region) },
 	{ 0x4292364c, __VMLINUX_SYMBOL_STR(schedule) },
 	{ 0xd115b743, __VMLINUX_SYMBOL_STR(current_task) },
 	{ 0x8063aca5, __VMLINUX_SYMBOL_STR(kmem_cache_alloc) },
 	{ 0xd16b0bfd, __VMLINUX_SYMBOL_STR(kmalloc_caches) },
-	{ 0xb8e7ce2c, __VMLINUX_SYMBOL_STR(__put_user_8) },
-	{ 0x37a0cba, __VMLINUX_SYMBOL_STR(kfree) },
 	{ 0xc671e369, __VMLINUX_SYMBOL_STR(_copy_to_user) },
-	{ 0xa0bdee50, __VMLINUX_SYMBOL_STR(_raw_spin_unlock_irqrestore) },
 	{ 0x13d0adf7, __VMLINUX_SYMBOL_STR(__kfifo_out) },
+	{ 0xadf42bd5, __VMLINUX_SYMBOL_STR(__request_region) },
+	{ 0x37a0cba, __VMLINUX_SYMBOL_STR(kfree) },
+	{ 0xa0bdee50, __VMLINUX_SYMBOL_STR(_raw_spin_unlock_irqrestore) },
+	{ 0xf23fcb99, __VMLINUX_SYMBOL_STR(__kfifo_in) },
 	{ 0x9d01647a, __VMLINUX_SYMBOL_STR(_raw_spin_lock_irqsave) },
 	{ 0x12da5bb2, __VMLINUX_SYMBOL_STR(__kmalloc) },
 	{ 0x52afc890, __VMLINUX_SYMBOL_STR(cdev_add) },
 	{ 0x2c1b89d8, __VMLINUX_SYMBOL_STR(__raw_spin_lock_init) },
 	{ 0x51a5ae61, __VMLINUX_SYMBOL_STR(cdev_init) },
-	{ 0x50eedeb8, __VMLINUX_SYMBOL_STR(printk) },
 	{ 0x9bce482f, __VMLINUX_SYMBOL_STR(__release_region) },
 	{ 0x59d8223a, __VMLINUX_SYMBOL_STR(ioport_resource) },
+	{ 0x50eedeb8, __VMLINUX_SYMBOL_STR(printk) },
 };
 
 static const char __module_depends[]
@@ -55,4 +56,4 @@ __attribute__((section(".modinfo"))) =
 "depends=";
 
 
-MODULE_INFO(srcversion, "2CFD45C49750ACC08C8AC1B");
+MODULE_INFO(srcversion, "ED0907CB9961BE6C33D84B7");
