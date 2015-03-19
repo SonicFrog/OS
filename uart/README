@@ -1,0 +1,17 @@
+Each device is represented as a struct containing two locks (one for the input kfifo the other for the output kfifo), two wait_queues (one for the process waiting to read data from the device, the other for the processes waiting to write data to the device).
+The structure also contains a cdev which is registered with the kernel.
+Lastly the structure contains misc information about the current device (irq number, minor number, and base port).
+
+Upon being opened the private_data field of the corresponding struct file is assigned the adress of the com_dev struct associated with the device being opened.
+
+When the read function is called the calling process is put to sleep if the fifo is empty using wait_event_interruptible. Once some data is put into the FIFO the interrupt handler wakes all processes in the read wait queue all of which then try to lock the input_spinlock. The one who succeeds gets to read data from the fifo and wakes all the other after it's done reading. This goes on until no more data is available in the inbuffer fifo.
+
+The processes waiting in the read wait list can also be woken up by the interrupt_handler which will wake all processes each time it is called if the fifo is not empty.
+
+The write function works mostly the same way but in reverse. Processes are put to sleep if the fifo is full and woken up by the interrupt handler. 
+
+The unlocked_ioctl function takes a pointer to a uart16550_line_info structure, it checks it for validity before applying the changes to the underlying hardware through the uart16550_hw_set_line_parameters function.
+
+The read and write functions do not need to disable interruptions while accessing the fifos because the interrupt handle only reads (resp. writes) the output (resp. input) fifos and according to the documentaion locking is not required when there is only one concurrent reader and one writer. The only lucking required is thus the lock preventing multiple process from reading from (resp. writing to) the inbound (resp. outbound) fifo. 
+
+
