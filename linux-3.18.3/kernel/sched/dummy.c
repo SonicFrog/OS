@@ -4,6 +4,8 @@
 
 #include "sched.h"
 
+#include <linux/list.h>
+
 /*
  * Timeslice and age threshold are repsented in jiffies. Default timeslice
  * is 100ms. Both parameters can be tuned from /proc/sys/kernel.
@@ -29,7 +31,11 @@ static inline unsigned int get_age_threshold(void)
 
 void init_dummy_rq(struct dummy_rq *dummy_rq, struct rq *qr)
 {
-    dummy_rq->root = RB_ROOT;
+    int i;
+
+    for (i = 0; i < DUMMY_PRIO_COUNT; i++) {
+        INIT_LIST_HEAD(&dummy_rq->queues[i]);
+    }
 }
 
 static inline struct task_struct *dummy_task_of(struct sched_dummy_entity *dummy_se)
@@ -37,130 +43,137 @@ static inline struct task_struct *dummy_task_of(struct sched_dummy_entity *dummy
     return container_of(dummy_se, struct task_struct, dummy_se);
 }
 
-/**
- * Gets the aged dummy prio for the given sched_entity
- * @param se a pointer to a sched_dummy_entity
- * @returns The total aged priority for the given entity
- **/
-static inline int get_dummy_prio(struct sched_dummy_entity* se)
+static inline int dummy_task_prio(struct sched_dummy_entity* se)
 {
-    return max(se->prio_base + se->prio_dyn, (u64) DUMMY_PRIO_BASE);
+    struct task_struct* task = dummy_task_of(se);
+
+    return task->prio - DUMMY_PRIO_BASE;
+}
+
+static inline int dummy_needs_aging (struct sched_dummy_entity *dummy_se)
+{
+    return dummy_se->jiffies_since_last > NS_TO_JIFFIES(get_age_threshold());
+}
+
+static inline struct list_head* dummy_queue_for_prio (struct rq* rq, int prio)
+{
+    struct list_head* result;
+
+    result = rq->dummy.queues + prio - DUMMY_PRIO_BASE - 1;
+
+    return result;
+}
+
+static inline struct list_head* dummy_queue_from_prio (struct rq* rq,
+                                                       struct sched_dummy_entity* se)
+{
+    struct list_head *result;
+
+    result = rq->dummy.queues + dummy_task_prio(se) - 1;
+
+    return result;
+}
+
+static inline void _queue_dummy_task(struct rq* rq, struct task_struct* task)
+{
+    struct list_head* target_head;
+
+    target_head = dummy_queue_from_prio(rq, &task->dummy_se);
+
+    list_move_tail(&task->dummy_se.run_list, target_head);
+}
+
+
+/**
+ * Returns a pointer to the sched_dummy_entity with the highest priority
+ **/
+static inline struct sched_dummy_entity *dummy_highest_prio(struct rq* rq)
+{
+    int i;
+    struct list_head *current_head;
+    struct list_head *entry;
+    struct sched_dummy_entity *se;
+
+    for (i = 0; i < DUMMY_PRIO_COUNT; i++) {
+        current_head = dummy_queue_for_prio(rq, dummy_task_of(se)->prio);
+
+        if (!list_empty(current_head)) {
+            list_for_each (entry, current_head) {
+                se = list_entry (entry, struct sched_dummy_entity, run_list);
+                return se;
+            }
+        }
+    }
+
+    return NULL;
 }
 
 /**
  * Increases the dummy priority of an entity
  **/
-static inline void inc_dummy_prio(struct sched_dummy_entity* se)
+static inline void inc_dummy_prio(struct rq* rq, struct sched_dummy_entity* se)
 {
-    se->prio_dyn--;
+    struct list_head *target_head = dummy_queue_from_prio(rq, se)
+        - sizeof(struct list_head);
+
+    list_move_tail(&se->run_list, target_head);
 }
 
 /**
- * Resets the priority of a dummy to its base value
+ * Resets the dummy prio of the given entity
  **/
-static inline void reset_dummy_prio(struct sched_dummy_entity* se)
+static inline void reset_dummy_prio(struct rq* rq, struct sched_dummy_entity* se)
 {
-    se->prio_dyn = 0;
+    struct list_head *target_head = dummy_queue_from_prio(rq, se);
+
+    list_move_tail(&se->run_list, target_head);
+}
+
+static inline void start_dummy_run(struct sched_dummy_entity* se) {
+    se->jiffies_since_last = se->jiffies_count = 0;
 }
 
 /**
- * Ages the dummy priority of the given entity
+ * Traverses the rb tree and increases priority for task that have not run for
+ * more than age_threshold.
  **/
-static inline void age_dummy_prio(struct sched_dummy_entity* se)
+static void dummy_age_tree(struct rq* rq)
 {
-    if (get_dummy_prio(se) < DUMMY_PRIO_HIGH) {
-        inc_dummy_prio(se);
-    }
-}
+    int i;
+    struct list_head *current_head, *prev_head = NULL;
+    struct list_head *pos;
+    struct sched_dummy_entity *entry;
 
-/**
- * Inserts a new node in the rbtree while rebalancing
- * @param root The root of the tree we are adding to
- * @param se The scheduling entity we are adding to the tree
- **/
-static void weighted_rbtree_insert(struct rb_root *root, struct sched_dummy_entity* se)
-{
-    struct rb_node **new = &(root->rb_node), *parent = NULL;
+    for (i = 0; i < DUMMY_PRIO_HIGH; i++) {
+        current_head = &rq->dummy.queues[i];
+        if (!list_empty(current_head)) {
 
-    /* Figure out where to put new node */
-    while (*new) {
-        struct sched_dummy_entity *this =
-            container_of(*new, struct sched_dummy_entity, node);
-        struct sched_dummy_entity *insert = se;
-        int prio_diff = get_dummy_prio(insert) - get_dummy_prio(this);
+            list_for_each (pos, current_head) {
+                entry = list_entry(pos, struct sched_dummy_entity, run_list);
 
-        parent = *new;
-
-        if (prio_diff < 0) {
-            new = &((*new)->rb_left);
-        }
-        else if (prio_diff > 0) {
-            new = &((*new)->rb_right);
-        }
-        else { //Same priority => order by last jiffies
-            if (insert->last_jiffies > this->last_jiffies) {
-                new = &((*new)->rb_right);
-            } else {
-                new = &((*new)->rb_left);
+                if (dummy_needs_aging(entry)) {
+                    entry->jiffies_since_last = 0;
+                    if (prev_head) {
+                        list_move_tail(&entry->run_list, prev_head);
+                    }
+                }
             }
         }
     }
-
-    /* Add new node and rebalance tree. */
-    rb_link_node(&se->node, parent, new);
-    rb_insert_color(&se->node, root);
-}
-
-/**
- * Traverses the rb tree and ages priority for the tasks that have not run in a
- * while.
- **/
-static void dummy_age_tree(struct rq* rq, struct rb_root *root)
-{
-    struct sched_dummy_entity *pos, *n;
-    u64 now = rq_clock(rq);
-
-    rbtree_postorder_for_each_entry_safe(pos, n, root, node) {
-        if (now - pos->last_jiffies > NS_TO_JIFFIES(get_age_threshold())) {
-            age_dummy_prio(pos);
-            //Remove and re-insert the current node to rebalance tree
-            rb_erase(&pos->node, &rq->dummy.root);
-            weighted_rbtree_insert(&rq->dummy.root, pos);
-        }
-    }
-}
-
-/**
- * Gets the leftmost node of rbtree containing sched_dummy_entities.
- * The leftmost node is the node with the highest priority that is ready to run!
- **/
-static struct sched_dummy_entity* rb_get_leftmost(struct rb_root* root)
-{
-    struct rb_node *node = root->rb_node, *prev;
-    struct sched_dummy_entity *left = NULL;
-
-    while(node) {
-        prev = node;
-        node = node->rb_left;
-    }
-
-    left = container_of(prev, struct sched_dummy_entity, node);
-
-    return left;
 }
 
 static inline void _enqueue_task_dummy(struct rq *rq, struct task_struct *p)
 {
-    struct sched_dummy_entity *dummy_se = &p->dummy_se;
+    struct sched_dummy_entity *se = &p->dummy_se;
+    struct list_head *head = dummy_queue_from_prio(rq, se);
 
-    weighted_rbtree_insert(&rq->dummy.root, dummy_se);
+    list_add_tail(&se->run_list, head);
 }
 
 static inline void _dequeue_task_dummy(struct rq* rq, struct task_struct *p)
 {
-    struct sched_dummy_entity *dummy_se = &p->dummy_se;
-
-    rb_erase(&dummy_se->node, &rq->dummy.root);
+    struct sched_dummy_entity *se = &p->dummy_se;
+    list_del_init(&se->run_list);
 }
 
 /*
@@ -185,8 +198,12 @@ static void dequeue_task_dummy(struct rq *rq, struct task_struct *p, int flags)
  **/
 static void yield_task_dummy(struct rq *rq)
 {
-    reset_dummy_prio(&rq->curr->dummy_se);
-    resched_curr(rq);
+    struct sched_dummy_entity *se = &rq->curr->dummy_se;
+    struct list_head* head = dummy_queue_from_prio(rq, se);
+    struct list_head* entry = &se->run_list;
+
+    list_del_init(entry);
+    list_add_tail(entry, head);
 }
 
 /**
@@ -198,7 +215,6 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
     struct sched_dummy_entity *se = &curr->dummy_se, *pse = &p->dummy_se;
 
     if (unlikely(se == pse)) {
-        //We need not do anything since the running has highest prio
         return;
     }
 
@@ -207,9 +223,7 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
         return;
     }
 
-    if (get_dummy_prio(se) < get_dummy_prio(pse)) {
-        resched_curr(rq);
-    }
+    resched_curr(rq);
 }
 
 /**
@@ -217,19 +231,11 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
  **/
 static void put_prev_task_dummy(struct rq *rq, struct task_struct *prev)
 {
-    struct task_struct *p = rq->curr;
-    struct sched_dummy_entity* se;
-    struct rb_root* root = &rq->dummy.root;
-
-    if (unlikely(!p)) {
+    if (unlikely(!prev)) {
         return;
     }
 
-    se = &p->dummy_se;
-
-    reset_dummy_prio(se);
-    rb_erase(&se->node, root);
-    weighted_rbtree_insert(root, se);
+    reset_dummy_prio(rq, &prev->dummy_se);
 }
 
 
@@ -241,38 +247,24 @@ static void put_prev_task_dummy(struct rq *rq, struct task_struct *prev)
  **/
 static struct task_struct *pick_next_task_dummy(struct rq *rq, struct task_struct* prev)
 {
-    struct sched_dummy_entity* se = rb_get_leftmost(&rq->dummy.root);
     struct task_struct* next;
 
-    if (unlikely(!se)) {
-        return NULL;
+    next = dummy_task_of(dummy_highest_prio(rq));
+
+    if (unlikely(!next)) {
+        return prev;
     }
-
-    se->last_jiffies = get_jiffies_64();
-
-    next = dummy_task_of(se);
 
     if (next != prev) {
         put_prev_task_dummy(rq, prev);
     }
 
-    return dummy_task_of(se);
+    return next;
 }
-
 
 static void set_curr_task_dummy(struct rq *rq)
 {
-    struct task_struct *p = rq->curr;
-    struct sched_dummy_entity *se;
-
-    if (unlikely(!p)) {
-        return;
-    }
-
-    se = &p->dummy_se;
-
-    se->last_jiffies = get_jiffies_64();
-    _enqueue_task_dummy(rq, p);
+    /* TODO: what is this supposed to do ? */
 }
 
 /**
@@ -283,46 +275,34 @@ static void set_curr_task_dummy(struct rq *rq)
  **/
 static void task_tick_dummy(struct rq *rq, struct task_struct *curr, int queued)
 {
-    struct sched_dummy_entity* se = &curr->dummy_se;
-    struct sched_dummy_entity* top_prio;
+    struct sched_dummy_entity *se = &curr->dummy_se;
 
-    dummy_age_tree(rq, &rq->dummy.root);
+    dummy_age_tree(rq);
 
-    top_prio = rb_get_leftmost(&rq->dummy.root);
+    se->jiffies_count++;
 
-    if (top_prio != se) {
+    if (se->jiffies_count > NS_TO_JIFFIES(get_timeslice())) {
         resched_curr(rq);
     }
 }
 
 static void switched_from_dummy(struct rq *rq, struct task_struct *p)
 {
-    p->dummy_se.last_jiffies = get_jiffies_64();
 }
 
 static void switched_to_dummy(struct rq *rq, struct task_struct *p)
 {
-    p->dummy_se.last_jiffies = get_jiffies_64();
+    struct sched_dummy_entity *se = &p->dummy_se;
+
+    start_dummy_run(se);
 }
 
 static void prio_changed_dummy(struct rq *rq, struct task_struct *p, int oldprio)
 {
-    struct sched_dummy_entity *se;
+    struct sched_dummy_entity *se = &p->dummy_se;
 
-    if (unlikely(!p)) {
-        return;
-    }
-
-    se = &p->dummy_se;
-
-    se->prio_base = p->prio;
-
-    reset_dummy_prio(se);
-
-    if (oldprio < p->prio) {
-        //If the priority was higher before change we need to reschedule
-        rb_erase(&se->node, &rq->dummy.root);
-        weighted_rbtree_insert(&rq->dummy.root, se);
+    if (likely(oldprio != p->prio)) {
+        reset_dummy_prio(rq, se);
     }
 }
 
@@ -330,6 +310,7 @@ static unsigned int get_rr_interval_dummy(struct rq* rq, struct task_struct *p)
 {
     return get_timeslice();
 }
+
 #ifdef CONFIG_SMP
 /*
  * SMP related functions
@@ -360,10 +341,8 @@ static void update_curr_dummy(struct rq *rq)
         return;
     }
 
+    reset_dummy_prio(rq, se);
     se = &p->dummy_se;
-
-    se->last_jiffies = get_jiffies_64();
-    reset_dummy_prio(se);
 }
 
 const struct sched_class dummy_sched_class = {

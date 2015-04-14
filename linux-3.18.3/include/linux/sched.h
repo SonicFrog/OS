@@ -1170,11 +1170,8 @@ struct sched_rt_entity {
 struct sched_dummy_entity {
     struct list_head run_list;
 
-    struct rb_node node;
-
-    u64 last_jiffies;
-
-    u64 prio_dyn, prio_base;
+    u64 jiffies_count;
+    u64 jiffies_since_last;
 };
 
 struct sched_dl_entity {

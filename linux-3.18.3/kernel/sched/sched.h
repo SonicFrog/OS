@@ -467,8 +467,10 @@ struct dl_rq {
 #endif
 };
 
+#define DUMMY_PRIO_COUNT 5
+
 struct dummy_rq {
-    struct rb_root root;
+    struct list_head queues[DUMMY_PRIO_COUNT];
 };
 
 #ifdef CONFIG_SMP
