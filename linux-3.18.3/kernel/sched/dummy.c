@@ -4,8 +4,6 @@
 
 #include "sched.h"
 
-#include <linux/list.h>
-
 /*
  * Timeslice and age threshold are repsented in jiffies. Default timeslice
  * is 100ms. Both parameters can be tuned from /proc/sys/kernel.
@@ -136,6 +134,7 @@ static inline void start_dummy_run(struct sched_dummy_entity* se) {
 /**
  * Traverses the rb tree and increases priority for task that have not run for
  * more than age_threshold.
+ * @param rq The runqueue that needs to be checked for aging processes
  **/
 static void dummy_age_tree(struct rq* rq)
 {
@@ -145,9 +144,9 @@ static void dummy_age_tree(struct rq* rq)
     struct sched_dummy_entity *entry;
 
     for (i = 0; i < DUMMY_PRIO_HIGH; i++) {
-        current_head = &rq->dummy.queues[i];
-        if (!list_empty(current_head)) {
+        current_head = dummy_queue_for_prio(rq, i + DUMMY_PRIO_BASE);
 
+        if (!list_empty(current_head)) {
             list_for_each (pos, current_head) {
                 entry = list_entry(pos, struct sched_dummy_entity, run_list);
 
@@ -159,6 +158,7 @@ static void dummy_age_tree(struct rq* rq)
                 }
             }
         }
+        prev_head = current_head;
     }
 }
 
@@ -214,6 +214,8 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
     struct task_struct *curr = rq->curr;
     struct sched_dummy_entity *se = &curr->dummy_se, *pse = &p->dummy_se;
 
+    printk("Preempt check for %p on %p\n", p, rq);
+
     if (unlikely(se == pse)) {
         return;
     }
@@ -222,8 +224,6 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
     if (test_tsk_need_resched(curr)) {
         return;
     }
-
-    resched_curr(rq);
 }
 
 /**
@@ -231,6 +231,8 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
  **/
 static void put_prev_task_dummy(struct rq *rq, struct task_struct *prev)
 {
+    printk("Putting prev task %p on %p\n", prev, rq);
+
     if (unlikely(!prev)) {
         return;
     }
@@ -249,7 +251,11 @@ static struct task_struct *pick_next_task_dummy(struct rq *rq, struct task_struc
 {
     struct task_struct* next;
 
+    printk("Picking next task while %p runs\n", prev);
+
     next = dummy_task_of(dummy_highest_prio(rq));
+
+    printk("Next to run is %p\n", next);
 
     if (unlikely(!next)) {
         return prev;
@@ -265,6 +271,7 @@ static struct task_struct *pick_next_task_dummy(struct rq *rq, struct task_struc
 static void set_curr_task_dummy(struct rq *rq)
 {
     /* TODO: what is this supposed to do ? */
+    printk("Set curr_task\n");
 }
 
 /**
