@@ -15,6 +15,17 @@
 #define DUMMY_PRIO_BASE         130
 #define DUMMY_PRIO_HIGH         135
 
+
+#define __DEBUG
+
+
+#ifdef __DEBUG
+#define dprintk(fmt, ...) printk(KERN_DEBUG "%s:%d " fmt, \
+                                 __FILE__, __LINE__, ##__VA_ARGS__)
+#else
+#define dprintk(fmt, ...) do { } while(0)
+#endif
+
 unsigned int sysctl_sched_dummy_timeslice = DUMMY_TIMESLICE;
 static inline unsigned int get_timeslice(void)
 {
@@ -41,6 +52,9 @@ static inline struct task_struct *dummy_task_of(struct sched_dummy_entity *dummy
     return container_of(dummy_se, struct task_struct, dummy_se);
 }
 
+/**
+ * Returns the prio for the task in the range 1-5
+ **/
 static inline int dummy_task_prio(struct sched_dummy_entity* se)
 {
     struct task_struct* task = dummy_task_of(se);
@@ -214,7 +228,7 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
     struct task_struct *curr = rq->curr;
     struct sched_dummy_entity *se = &curr->dummy_se, *pse = &p->dummy_se;
 
-    printk("Preempt check for %p on %p\n", p, rq);
+    dprintk("Preempt check for %p on %p\n", p, rq);
 
     if (unlikely(se == pse)) {
         return;
@@ -231,7 +245,7 @@ static void check_preempt_curr_dummy(struct rq *rq, struct task_struct *p, int f
  **/
 static void put_prev_task_dummy(struct rq *rq, struct task_struct *prev)
 {
-    printk("Putting prev task %p on %p\n", prev, rq);
+    dprintk("Putting prev task %p on %p\n", prev, rq);
 
     if (unlikely(!prev)) {
         return;
@@ -251,11 +265,11 @@ static struct task_struct *pick_next_task_dummy(struct rq *rq, struct task_struc
 {
     struct task_struct* next;
 
-    printk("Picking next task while %p runs\n", prev);
+    dprintk("Picking next task while %p runs\n", prev);
 
     next = dummy_task_of(dummy_highest_prio(rq));
 
-    printk("Next to run is %p\n", next);
+    dprintk("Next to run is %p\n", next);
 
     if (unlikely(!next)) {
         return prev;
@@ -271,7 +285,7 @@ static struct task_struct *pick_next_task_dummy(struct rq *rq, struct task_struc
 static void set_curr_task_dummy(struct rq *rq)
 {
     /* TODO: what is this supposed to do ? */
-    printk("Set curr_task\n");
+    dprintk("Set curr_task\n");
 }
 
 /**
@@ -348,8 +362,9 @@ static void update_curr_dummy(struct rq *rq)
         return;
     }
 
-    reset_dummy_prio(rq, se);
     se = &p->dummy_se;
+
+    reset_dummy_prio(rq, se);
 }
 
 const struct sched_class dummy_sched_class = {
