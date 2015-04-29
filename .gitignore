@@ -1,1 +1,6 @@
 /uart/uart.zip
+
+*.o
+*.tar
+*.gz
+*.xz
