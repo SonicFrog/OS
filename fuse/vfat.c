@@ -10,6 +10,7 @@
 #include <fuse.h>
 #include <iconv.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,87 @@
 iconv_t iconv_utf16;
 char* DEBUGFS_PATH = "/.debug";
 
+
+static const uint16_t bps_values[] = { 512, 1024, 2048, 4096 };
+static const uint8_t spc_values[] = { 1, 2, 4, 16, 32, 64, 128 };
+
+
+static bool check_value_in_table(const void *val, const void* table,
+                                 const uint8_t size, const uint8_t tbl_sz)
+{
+    uint16_t i;
+
+    for (i = 0; i < tbl_sz; i++)
+    {
+        if (memcmp(val, table + size * i, size) == 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool check_fat_version(const struct fat_boot_header *header,
+                              struct vfat_data *data)
+{
+    bool ok = true;
+    uint16_t root_dir_sectors;
+    uint16_t fat_size;
+    uint32_t data_sectors;
+    uint16_t clusters_count;
+
+    ok = check_value_in_table(&header->bytes_per_sector, bps_values,
+                              sizeof(uint16_t), sizeof(bps_values) / sizeof(uint16_t));
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    ok = check_value_in_table(&header->sectors_per_cluster, spc_values,
+                              sizeof(uint8_t), sizeof(spc_values) / sizeof(uint8_t));
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    root_dir_sectors = ((header->root_max_entries * 32) +
+                        (header->bytes_per_sector -1)) / header->bytes_per_sector;
+
+    if (header->sectors_per_fat_small != 0)
+    {
+        return false;
+    }
+
+    if (header->total_sectors_small != 0)
+    {
+        return 0;
+    }
+
+    data_sectors = header->total_sectors - header->reserved_sectors +
+        (header->fat_count * header->sectors_per_fat);
+
+    clusters_count = data_sectors / header->sectors_per_cluster;
+
+
+    if (clusters_count < FAT32_MIN_CLUSTERS_COUNT)
+    {
+        return false;
+    }
+
+    data->cluster_size = header->sectors_per_cluster * header->bytes_per_sector;
+    data->sectors_per_fat = header->sectors_per_fat;
+    data->bytes_per_sector = header->bytes_per_sector;
+    data->sectors_per_cluster = header->sectors_per_cluster;
+    data->reserved_sectors = header->reserved_sectors;
+    data->fat_size = data->sectors_per_fat * data->bytes_per_sector;
+    data->direntry_per_cluster = data->cluster_size / sizeof(struct fat32_direntry);
+    data->fat_begin_offset = data->reserved_sectors + FAT32_BOOT_HEADER_LEN;
+
+    return true;
+}
 
 static void
 vfat_init(const char *dev)
@@ -45,10 +127,15 @@ vfat_init(const char *dev)
     if (pread(vfat_info.fd, &s, sizeof(s), 0) != sizeof(s))
         err(1, "read super block");
 
-    /* XXX add your code here */
+    if (!check_fat_version(&s, &vfat_info))
+    {
+        close(vfat_info.fd);
+        return;
+    }
 }
 
 /* XXX add your code here */
+
 
 int vfat_next_cluster(uint32_t c)
 {
@@ -97,15 +184,15 @@ int vfat_search_entry(void *data, const char *name, const struct stat *st, off_t
  * @path full path to a file, directories separated by slash
  * @st file stat structure
  * @returns 0 iff operation completed succesfully -errno on error
-*/
+ */
 int vfat_resolve(const char *path, struct stat *st)
 {
     /* TODO: Add your code here.
-        You should tokenize the path (by slash separator) and then
-        for each token search the directory for the file/dir with that name.
-        You may find it useful to use following functions:
-        - strtok to tokenize by slash. See manpage
-        - vfat_readdir in conjuction with vfat_search_entry
+       You should tokenize the path (by slash separator) and then
+       for each token search the directory for the file/dir with that name.
+       You may find it useful to use following functions:
+       - strtok to tokenize by slash. See manpage
+       - vfat_readdir in conjuction with vfat_search_entry
     */
     int res = -ENOENT; // Not Found
     return res;
@@ -143,28 +230,28 @@ int vfat_fuse_getxattr(const char *path, const char* name, char* buf, size_t siz
 }
 
 int vfat_fuse_readdir(
-        const char *path, void *callback_data,
-        fuse_fill_dir_t callback, off_t unused_offs, struct fuse_file_info *unused_fi)
+                      const char *path, void *callback_data,
+                      fuse_fill_dir_t callback, off_t unused_offs, struct fuse_file_info *unused_fi)
 {
     if (strncmp(path, DEBUGFS_PATH, strlen(DEBUGFS_PATH)) == 0) {
         // This is handled by debug virtual filesystem
         return debugfs_fuse_readdir(path + strlen(DEBUGFS_PATH), callback_data, callback, unused_offs, unused_fi);
     }
     /* TODO: Add your code here. You should reuse vfat_readdir and vfat_resolve functions
-    */
+     */
     return 0;
 }
 
 int vfat_fuse_read(
-        const char *path, char *buf, size_t size, off_t offs,
-        struct fuse_file_info *unused)
+                   const char *path, char *buf, size_t size, off_t offs,
+                   struct fuse_file_info *unused)
 {
     if (strncmp(path, DEBUGFS_PATH, strlen(DEBUGFS_PATH)) == 0) {
         // This is handled by debug virtual filesystem
         return debugfs_fuse_read(path + strlen(DEBUGFS_PATH), buf, size, offs, unused);
     }
     /* TODO: Add your code here. Look at debugfs_fuse_read for example interaction.
-    */
+     */
     return 0;
 }
 

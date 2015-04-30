@@ -6,6 +6,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#define FAT32_BOOT_HEADER_LEN 0x34 + 12
+#define FAT32_MIN_CLUSTERS_COUNT 65525
+
 // Boot sector
 struct fat_boot_header {
     /* General */
@@ -103,7 +106,7 @@ struct vfat_data {
     off_t       fat_begin_offset;
     size_t      fat_size;
     struct stat root_inode;
-    uint32_t*   fat; // use util::mmap_file() to map this directly into the memory 
+    uint32_t*   fat; // use util::mmap_file() to map this directly into the memory
 };
 
 struct vfat_data vfat_info;
