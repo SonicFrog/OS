@@ -8,6 +8,10 @@
 
 #define FAT32_BOOT_HEADER_LEN 0x34 + 12
 #define FAT32_MIN_CLUSTERS_COUNT 65525
+#define FAT32_SIGNATURE 0xAA55
+#define FAT32_END_OF_CHAIN 0xFFFFFFFF
+#define FAT32_DIRENTRY_SIZE 32
+#define FAT32_UNUSED_ENTRY 0xE5
 
 // Boot sector
 struct fat_boot_header {
@@ -96,6 +100,7 @@ struct vfat_data {
     time_t mount_time;
     /* TODO: add your code here */
     size_t      fat_entries;
+    size_t      cluster_count;
     off_t       cluster_begin_offset;
     size_t      direntry_per_cluster;
     size_t      bytes_per_sector;
@@ -112,7 +117,7 @@ struct vfat_data {
 struct vfat_data vfat_info;
 
 /// FOR debugfs
-int vfat_next_cluster(unsigned int c);
+uint32_t vfat_next_cluster(unsigned int c);
 int vfat_resolve(const char *path, struct stat *st);
 int vfat_fuse_getattr(const char *path, struct stat *st);
 ///
