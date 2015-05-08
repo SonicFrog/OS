@@ -6,7 +6,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#define FAT32_BOOT_HEADER_LEN 0x34 + 12
+#define FAT32_HEADER_LEN sizeof(struct fat_boot_header)
 #define FAT32_MIN_CLUSTERS_COUNT 65525
 #define FAT32_SIGNATURE 0xAA55
 #define FAT32_END_OF_CHAIN 0xFFFFFFFF
