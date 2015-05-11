@@ -28,7 +28,7 @@ iconv_t iconv_utf16;
 char* DEBUGFS_PATH = "/.debug";
 
 
-#define IS_LFN_ENTRY(attr) (attr & 0x0F)
+#define IS_LFN_ENTRY(attr) (attr & VFAT_ATTR_LFN)
 #define IS_VALID_ENTRY(dir) *((uint8_t *) dir) != 0xE5  \
         && *((uint8_t *) dir) != 0x00
 #define HAS_MORE_DIRS(dir) *((uint8_t *) dir) != 0x00
@@ -208,7 +208,7 @@ uint32_t vfat_next_cluster(uint32_t c)
 
     if (c > vfat_info.fat_entries)
     {
-        return 0xFFFFFFFF;
+        return 0xFFFFFFF;
     }
 
     next_cluster_addr = vfat_info.fat[c];
@@ -223,8 +223,8 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
 {
     struct stat st; // we can reuse same stat entry over and over again
     uint32_t cluster_num = first_cluster;
-    off_t offset = vfat_info.cluster_begin_offset
-        + cluster_num * vfat_info.cluster_size;
+    off_t offset = vfat_info.cluster_begin_offset +
+        cluster_num * vfat_info.cluster_size;
     struct fat32_direntry dir;
     uint32_t dir_count = 0;
 
@@ -233,10 +233,13 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
     st.st_gid = vfat_info.mount_gid;
     st.st_nlink = 1;
 
+    DEBUG_PRINT("Reading dir at %ud cluster", first_cluster);
+
     do
     {
         if (dir_count == vfat_info.direntry_per_cluster)
         {
+            DEBUG_PRINT("%d -> %d\n", cluster_num, vfat_next_cluster(cluster_num));
             cluster_num = vfat_next_cluster(cluster_num) & 0xfffffff;
 
             if (cluster_num == FAT32_END_OF_CHAIN)
@@ -264,10 +267,22 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
 
         if (IS_VALID_ENTRY(&dir) && !IS_LFN_ENTRY(dir.attr))
         {
-            DEBUG_PRINT("Found valid dir: %s\n", dir.nameext);
+            mode_t mode = S_IRWXU | S_IRWXG | S_IRWXO;
+
+            if (dir.attr & VFAT_ATTR_DIR)
+            {
+                DEBUG_PRINT("Found valid dir: %s\n", dir.nameext);
+                mode |= S_IFDIR;
+            }
+            else
+            {
+                DEBUG_PRINT("Found valid file: %s\n", dir.nameext);
+                mode |= S_IFREG;
+            }
+
+            st.st_mode = mode;
             st.st_size = dir.size;
-            st.st_atime = dir.atime_date;
-            st.st_ctime = dir.ctime_time;
+            st.st_ctime = st.st_atime = st.st_mtime = time(NULL);
             st.st_ino = (((uint32_t) dir.cluster_hi) << 16) | dir.cluster_lo;
 
             DEBUG_PRINT("First cluster at 0x%zx\n", st.st_ino);
@@ -301,7 +316,10 @@ int vfat_search_entry(void *data, const char *name, const struct stat *st,
 {
     struct vfat_search_data *sd = data;
 
-    if (strcmp(sd->name, name) != 0) return 0;
+    if (sd->name != NULL && strcmp(sd->name, name) != 0)
+    {
+        return 0;
+    }
 
     sd->found = 1;
     *sd->st = *st;
@@ -336,33 +354,32 @@ int vfat_resolve(const char *path, struct stat *st)
     lp = strtok(path_copy, "/");
     sd.found = 1;
     sd.st = st;
-    st->st_ino = 0;
 
     DEBUG_PRINT("Looking up %s\n", path);
 
-    do
+    while (lp != NULL)
     {
+        sd.name = lp;
+        sd.found = 0;
+
+        vfat_readdir(cluster_number, vfat_search_entry, &sd);
+
         if (!sd.found)
         {
             DEBUG_PRINT("%s not found!\n", lp);
             break;
         }
-        else if (lp == NULL)
-        {
-            DEBUG_PRINT("Successfully found %s\n", path);
-            *st = *sd.st;
-            res = 0;
-            break;
-        }
-
-        sd.name = lp;
-
-        vfat_readdir(cluster_number, vfat_search_entry, &sd);
 
         cluster_number = sd.st->st_ino;
 
         lp = strtok(NULL, "/");
-    } while (lp != NULL);
+    }
+
+    if (sd.found)
+    {
+        DEBUG_PRINT("Successfully found %s\n", path);
+        res = 0;
+    }
 
     DEBUG_PRINT("End of directory!\n");
 
