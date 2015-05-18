@@ -448,12 +448,9 @@ int vfat_resolve(const char *path, struct stat *st)
 // Get file attributes
 int vfat_fuse_getattr(const char *path, struct stat *st)
 {
-    PRINT_ERROR();
     if (strncmp(path, DEBUGFS_PATH, strlen(DEBUGFS_PATH)) == 0) {
-        PRINT_ERROR();
         return debugfs_fuse_getattr(path + strlen(DEBUGFS_PATH), st);
     } else {
-        PRINT_ERROR();
         return vfat_resolve(path, st);
     }
 }
