@@ -277,6 +277,7 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
     struct fat32_direntry dir;
     uint32_t dir_count = 0;
     char name[DIRNAME_LEN];
+    int32_t direntry_size = sizeof(struct fat32_direntry);
 
     memset(&st, 0, sizeof(st));
     st.st_uid = vfat_info.mount_uid;
@@ -311,7 +312,7 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
         }
 
         if (read(vfat_info.fd, &dir, sizeof(struct fat32_direntry))
-            < sizeof(struct fat32_direntry))
+            < direntry_size)
         {
             err(1, "Unable to read entire direntry 0x%zx from disk!\n", offset);
         }
