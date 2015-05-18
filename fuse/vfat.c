@@ -26,12 +26,6 @@
 #define DEBUG_PRINT(format, ...) printf("%s:%s:%d: " format, __FILE__,  \
                                         __func__, __LINE__,  ##__VA_ARGS__)
 
-#ifdef __DEBUG
-#define PRINT_ERROR() DEBUG_PRINT("\x1b[93;41mError: %s\x1b[0m\n", strerror(errno))
-#else
-#define PRINT_ERROR()
-#endif
-
 iconv_t iconv_utf16;
 char* DEBUGFS_PATH = "/.debug";
 
@@ -212,8 +206,6 @@ static bool check_fat_version(const struct fat_boot_header *header,
     DEBUG_PRINT("%zd fat entries\n", data->fat_entries);
     DEBUG_PRINT("First data cluster at 0x%zx\n", data->cluster_begin_offset);
 
-    PRINT_ERROR();
-
     return true;
 }
 
@@ -259,8 +251,6 @@ vfat_init(const char *dev)
         err(1, "Failed to mmap file");
     }
 }
-
-
 
 uint32_t vfat_next_cluster(uint32_t c)
 {
@@ -363,14 +353,12 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
     return 0;
 }
 
-
 // Used by vfat_search_entry()
 struct vfat_search_data {
     const char*  name;
     int          found;
     struct stat* st;
 };
-
 
 // You can use this in vfat_resolve as a callback function for vfat_readdir
 // This way you can get the struct stat of the subdirectory/file.
@@ -530,7 +518,7 @@ int vfat_fuse_read(
     struct stat st;
     off_t offset = 0;
     uint32_t cluster;
-    int32_t left_to_read = size;
+    uint32_t real_read;
 
     res = vfat_resolve(path, &st);
 
@@ -538,19 +526,10 @@ int vfat_fuse_read(
 
     if (res == 0)
     {
+        real_read = MIN(size + offs, st.st_size) - offs;
+        real_read = MIN(real_read, vfat_info.cluster_size);
+
         cluster = st.st_ino;
-
-        if (left_to_read + offs > st.st_size)
-        {
-            //Prevents the user from reading after the end of the file
-            left_to_read = st.st_size - offs;
-
-            if (left_to_read <= 0)
-            {
-                DEBUG_PRINT("Offset after end of file!\n");
-                return 0;
-            }
-        }
 
         while(offset < offs)
         {
@@ -564,47 +543,20 @@ int vfat_fuse_read(
             cluster = vfat_next_cluster(cluster);
         }
 
-        do
+        offset = offset_of_cluster(cluster) + (offs % vfat_info.cluster_size);
+
+        if (lseek(vfat_info.fd, offset, SEEK_SET) < offset)
         {
-            offset = offset_of_cluster(cluster) + (offs % vfat_info.cluster_size);
+            return -errno;
+        }
 
-            off_t cluster_off = offs % vfat_info.cluster_size;
-            off_t read_span = cluster_off + left_to_read;
-            size_t real_read = read_span;
-
-            if (read_span + offs > vfat_info.cluster_size)
-            {
-                real_read = real_read -
-                    ((real_read + offs) % vfat_info.cluster_size);
-            }
-
-            DEBUG_PRINT("Reading from 0x%x at 0x%zx for %zd bytes\n", cluster,
-                        cluster_off, real_read);
-
-            if (lseek(vfat_info.fd, offset, SEEK_SET) < offset)
-            {
-                return -errno;
-            }
-
-            real_read = read(vfat_info.fd, buf, real_read);
-
-            res += real_read;
-
-            if (real_read == 0)
-            {
-                DEBUG_PRINT("Reached EOF!\n");
-            }
-
-            buf += real_read;
-            left_to_read -= real_read;
-            cluster = vfat_next_cluster(cluster);
-        } while (left_to_read > 0 && cluster != FAT32_END_OF_CHAIN);
+        res = read(vfat_info.fd, buf, real_read);
 
         DEBUG_PRINT("Read has ended after reading %d bytes\n", res);
 
         if (res < 0)
         {
-            res = errno;
+            res = -errno;
         }
     }
 
