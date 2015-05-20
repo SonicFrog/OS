@@ -1,4 +1,5 @@
 #include <sys/types.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
@@ -9,6 +10,9 @@
 
 #include "util.h"
 #include "vfat.h"
+
+#define assertf(A, M, ...) if(!(A)) { DEBUG_PRINT(M, ##__VA_ARGS__); \
+        assert(A); }
 
 
 uintptr_t page_floor(uintptr_t offset) {
@@ -65,22 +69,32 @@ void clear_time(struct tm *time)
 void vfat_parse_date(const uint16_t date, struct tm *out)
 {
     out->tm_mday = (date & 0xF);
-    out->tm_mon = (date >> 4) & 0b111;
-    out->tm_year = (date >> 8) & 0x3F;
+    out->tm_mon = (date >> 5) & 0b1111;
+    out->tm_year = date >> 9;
 
-    assert(out->tm_mday > 0 && out->tm_mday < 32);
-    assert(out->tm_mon > 0 && out->tm_mon < 13);
+    DEBUG_PRINT("Date: %d/%d/%d\n", out->tm_mday, out->tm_mon,
+                out->tm_year + 1980);
+
+    assertf(out->tm_mday > 0 && out->tm_mday < 32, "Invalid day: %d\n",
+            out->tm_mday);
+    assertf(out->tm_mon > 0 && out->tm_mon < 13, "Invalid month: %d\n",
+           out->tm_mon);
 }
 
 void vfat_parse_time(const uint16_t time, struct tm *out)
 {
-    out->tm_hour = (time >> 10);
-    out->tm_min = (time >> 4) & 0b111111;
+    out->tm_hour = (time >> 11);
+    out->tm_min = (time >> 5) & 0b111111;
     out->tm_sec = (time & 0xF) * 2;
 
-    assert(out->tm_hour > 0 && out->tm_hour < 24);
-    assert(out->tm_sec > 0 && out->tm_sec < 60);
-    assert(out->tm_min > 0 && out->tm_min < 60);
+    DEBUG_PRINT("Time: %d:%d:%d\n", out->tm_hour, out->tm_min, out->tm_sec);
+
+    assertf(out->tm_hour >= 0 && out->tm_hour < 24, "Invalid hours: %d\n",
+            out->tm_hour);
+    assertf(out->tm_sec >= 0 && out->tm_sec < 60, "Invalid seconds: %d\n",
+            out->tm_sec);
+    assertf(out->tm_min >= 0 && out->tm_min < 60, "Invalid minutes: %d\n",
+            out->tm_min);
 }
 
 void vfat_parse_timestamp(const struct fat32_direntry *dir, struct stat *out)
@@ -101,6 +115,7 @@ void vfat_parse_timestamp(const struct fat32_direntry *dir, struct stat *out)
     vfat_parse_time(dir->ctime_time, &ctime);
     vfat_parse_date(dir->mtime_date, &mtime);
     vfat_parse_time(dir->mtime_time, &mtime);
+
 
     out->st_ctime = mktime(&ctime);
     out->st_mtime = mktime(&mtime);
