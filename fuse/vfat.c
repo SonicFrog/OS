@@ -21,24 +21,18 @@
 
 #include "vfat.h"
 #include "util.h"
+#include "lfn.h"
 #include "debugfs.h"
 
-#define DEBUG_PRINT(format, ...) printf("%s:%s:%d: " format, __FILE__,  \
-                                        __func__, __LINE__,  ##__VA_ARGS__)
 
-iconv_t iconv_utf16;
 char* DEBUGFS_PATH = "/.debug";
 
 #define NAME_LEN 8
 #define EXT_LEN 3
 #define DIRNAME_LEN NAME_LEN + EXT_LEN + 2
+
 #define ROOT_CLUSTER 2
 
-
-#define IS_LFN_ENTRY(attr) (attr & VFAT_ATTR_LFN)
-#define IS_VALID_ENTRY(dir) *((uint8_t *) dir) != 0xE5  \
-        && *((uint8_t *) dir) != 0x00
-#define HAS_MORE_DIRS(dir) *((uint8_t *) dir) != 0x00
 
 
 static const uint16_t bps_values[] = { 512, 1024, 2048, 4096 };
@@ -66,12 +60,13 @@ inline void vfat_stat_root(struct stat *st)
 {
     st->st_ino = ROOT_CLUSTER;
     st->st_mode = S_IRWXU | S_IRWXG | S_IRWXO | S_IFDIR;
-    st->st_mtime = st->st_ctime = st->st_atime = time(NULL);
+    st->st_mtime = st->st_ctime = st->st_atime = vfat_info.mount_time;
 }
 
 static inline uint32_t offset_of_cluster(uint32_t c)
 {
-    return (c - 2) * vfat_info.cluster_size + vfat_info.cluster_begin_offset;
+    return (c - ROOT_CLUSTER) * vfat_info.cluster_size
+        + vfat_info.cluster_begin_offset;
 }
 
 inline void clean_string(char* str, size_t size)
@@ -80,11 +75,6 @@ inline void clean_string(char* str, size_t size)
 
     while ((pos = memchr(str, 0x20, size)) != NULL)
         *pos = 0x00;
-
-    for (pos = str; *pos != 0x00; pos++)
-    {
-        *pos = (char) tolower(*pos);
-    }
 }
 
 inline void clean_short_name(struct fat32_direntry *dir)
@@ -93,9 +83,21 @@ inline void clean_short_name(struct fat32_direntry *dir)
     clean_string(dir->ext, EXT_LEN);
 }
 
+inline int read_direntry_at(int fd, struct fat32_direntry *dest, off_t offs)
+{
+    return pread(fd, dest, DIRENTRY_SIZE, offs);
+}
+
+inline bool is_lfn_entry_begin(const struct fat32_direntry *dir)
+{
+    return IS_LFN_ENTRY(dir) && (dir->name[0] & 0x40);
+}
+
 void clean_name(char* name, struct fat32_direntry* entry)
 {
     char lname[NAME_LEN + 1], lext[EXT_LEN + 1];
+
+    memset(name, 0, DIRNAME_LEN);
 
     clean_short_name(entry);
 
@@ -115,8 +117,6 @@ void clean_name(char* name, struct fat32_direntry* entry)
     }
 
     clean_string(name, DIRNAME_LEN);
-
-    DEBUG_PRINT("Clean name: %s\n", name);
 }
 
 static bool check_fat_version(const struct fat_boot_header *header,
@@ -214,7 +214,8 @@ vfat_init(const char *dev)
 {
     struct fat_boot_header s;
 
-    iconv_utf16 = iconv_open("utf-8", "utf-16"); // from utf-16 to utf-8
+    iconv_utf16 = iconv_open("utf-8", "utf-16");
+
     // These are useful so that we can setup correct permissions in the mounted directories
     vfat_info.mount_uid = getuid();
     vfat_info.mount_gid = getgid();
@@ -268,6 +269,30 @@ uint32_t vfat_next_cluster(uint32_t c)
     return next_cluster_addr & 0xFFFFFFF;
 }
 
+int vfat_stat_from_direntry(struct fat32_direntry *dir, struct stat* out)
+{
+    mode_t mode = S_IRWXU | S_IRWXG | S_IRWXO;
+
+    if (IS_DIRECTORY(dir))
+    {
+        DEBUG_PRINT("Found valid dir: %s\n", dir->name);
+        mode |= S_IFDIR;
+    }
+    else
+    {
+        DEBUG_PRINT("Found valid file: %s\n", dir->name);
+        mode |= S_IFREG;
+    }
+
+    out->st_mode = mode;
+    out->st_size = dir->size;
+    out->st_ino = (((uint32_t) dir->cluster_hi) << 16) | dir->cluster_lo;
+
+    vfat_parse_timestamp(dir, out);
+
+    return 0;
+}
+
 int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
                  void *callbackdata)
 {
@@ -276,8 +301,9 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
     off_t offset;
     struct fat32_direntry dir;
     uint32_t dir_count = 0;
-    char name[DIRNAME_LEN];
-    int32_t direntry_size = sizeof(struct fat32_direntry);
+    char real_name[NAME_MAX * sizeof(uint16_t) + 1];
+    bool inside_lfn = false;
+    uint8_t csum;
 
     memset(&st, 0, sizeof(st));
     st.st_uid = vfat_info.mount_uid;
@@ -285,10 +311,11 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
     st.st_nlink = 1;
 
     offset = offset_of_cluster(cluster_num);
+    read_direntry_at(vfat_info.fd, &dir, offset);
 
     DEBUG_PRINT("Reading directory at %x\n", first_cluster);
 
-    do
+    while (HAS_MORE_DIRS(&dir))
     {
         if (dir_count == vfat_info.direntry_per_cluster)
         {
@@ -306,50 +333,65 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
 
         dir_count++;
 
-        if (lseek(vfat_info.fd, offset, SEEK_SET) < offset)
+        if (read_direntry_at(vfat_info.fd, &dir, offset) < 0)
         {
-            err(1, "Unable to seek at 0x%zx\n", offset);
+            err(1, "Error while reading directory:");
         }
 
-        if (read(vfat_info.fd, &dir, sizeof(struct fat32_direntry))
-            < direntry_size)
+        offset += DIRENTRY_SIZE;
+
+        DEBUG_PRINT("Tag: 0x%02x\n", (uint8_t) dir.name[0]);
+
+        if (is_valid_direntry(&dir) || is_lfn_entry_begin(&dir))
         {
-            err(1, "Unable to read entire direntry 0x%zx from disk!\n", offset);
-        }
+            DEBUG_PRINT("Found: 0x%x\n", dir.attr);
 
-        if (IS_VALID_ENTRY(&dir) && !IS_LFN_ENTRY(dir.attr))
-        {
-            mode_t mode = S_IRWXU | S_IRWXG | S_IRWXO;
-
-            clean_name(name, &dir);
-
-            if (dir.attr & VFAT_ATTR_DIR)
+            if (is_lfn_entry_begin(&dir))
             {
-                DEBUG_PRINT("Found valid dir: %s\n", name);
-                mode |= S_IFDIR;
-            }
-            else
-            {
-                DEBUG_PRINT("Found valid file: %s\n", name);
-                mode |= S_IFREG;
+                DEBUG_PRINT("Starting LFN entry!\n");
+                csum = ((struct fat32_direntry_long *) &dir)->csum;
+                inside_lfn = true;
             }
 
-            st.st_mode = mode;
-            st.st_size = dir.size;
-            st.st_ctime = st.st_atime = st.st_mtime = time(NULL);
-            st.st_ino = (((uint32_t) dir.cluster_hi) << 16) | dir.cluster_lo;
+            if (IS_LFN_ENTRY(&dir) && inside_lfn)
+            {
+                int res;
+                struct fat32_direntry_long *lng_dir =
+                    (struct fat32_direntry_long *) &dir;
+
+                DEBUG_PRINT("Reading LFN direntry!...\n");
+
+                res = read_lfn(lng_dir);
+
+                assertf(lng_dir->csum == csum, "Invalid checksum in LFN\n");
+
+                if (res < 0)
+                {
+                    err(1, "Unable to read lfn entry:");
+                }
+
+                DEBUG_PRINT("Read LFN chunk!\n");
+
+                continue;
+            }
+
+            vfat_stat_from_direntry(&dir, &st);
 
             DEBUG_PRINT("First cluster at 0x%zx\n", st.st_ino);
 
-            if (callback(callbackdata, name, &st, 0) == 1)
+            int real_csum = calc_csum((uint8_t *) dir.nameext);
+
+            if (get_lfn(real_name) < 0 || real_csum != csum)
             {
-                DEBUG_PRINT("Not adding anymore dirs to fuse\n");
+                clean_name(real_name, &dir);
+            }
+
+            if (callback(callbackdata, (char *) real_name, &st, 0) == 1)
+            {
                 return 0;
             }
         }
-
-        offset += sizeof(struct fat32_direntry);
-    } while (HAS_MORE_DIRS(&dir));
+    }
 
     return 0;
 }
@@ -395,6 +437,10 @@ int vfat_resolve(const char *path, struct stat *st)
     uint32_t cluster_number = vfat_info.root_inode.st_ino;
     char *path_copy;
 
+    assert(path);
+    assert(strlen(path) > 0);
+    assert(st);
+
     path_copy = calloc(strlen(path) + 1, sizeof(char));
 
     if (path_copy == NULL)
@@ -405,11 +451,10 @@ int vfat_resolve(const char *path, struct stat *st)
 
     strncpy(path_copy, path, strlen(path) + 1);
 
-    clean_string(path_copy, strlen(path));
-
     lp = strtok(path_copy, "/");
 
     sd.st = st;
+    sd.found = 1;
 
     vfat_stat_root(st);
 
@@ -524,8 +569,10 @@ int vfat_fuse_read(
 
     if (res == 0)
     {
-        real_read = MIN(size + offs, st.st_size) - offs;
+        real_read = MIN((off_t) size, st.st_size - offs);
         real_read = MIN(real_read, vfat_info.cluster_size);
+
+        DEBUG_PRINT("Reading %d starting at 0x%zx\n", real_read, offs);
 
         cluster = st.st_ino;
 

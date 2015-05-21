@@ -4,81 +4,101 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#include <err.h>
 
 #include "vfat.h"
 #include "lfn.h"
+#include "util.h"
 
+static bool has_lfn = false;
+static int lfn_entries_count = 0;
+static char lfn_entries[NAME_MAX][NAME_MAX];
 
-int parse_long_name(uint16_t *dest)
+uint8_t calc_csum(uint8_t const short_name[11])
 {
-    assert(dest);
-
-
-    return 0;
-}
-
-void clean_ucs_string(uint16_t *str, size_t len)
-{
-    uint16_t *pos;
-    uint16_t needle = 0xFFFF;
-
-    while((pos = memmem(str, len, &needle, sizeof(uint16_t))) != NULL)
+    short FcbNameLen;
+    unsigned char Sum;
+    Sum = 0;
+    for (FcbNameLen = 11; FcbNameLen != 0; FcbNameLen--)
     {
-        *pos = 0x0;
+        Sum = ((Sum & 1) ? 0x80 : 0) + (Sum >> 1) + *short_name++;
     }
+
+    return (Sum);
 }
 
-void clean_long_entry(struct fat32_direntry_long *dir)
+int get_lfn(char *output)
 {
-    clean_ucs_string(dir->name1, VFAT_LFN_NAME1_SIZE);
-    clean_ucs_string(dir->name2, VFAT_LFN_NAME2_SIZE);
-    clean_ucs_string(dir->name3, VFAT_LFN_NAME3_SIZE);
+    int res = -ENOENT;
+    int i;
 
-    DEBUG_PRINT("Cleaned UCS: %s%s%s\n", (char *) dir->name1,
-                (char *) dir->name2, (char *) dir->name3);
+    if (has_lfn)
+    {
+        for (i = lfn_entries_count - 1; i >= 0; i--)
+        {
+            memcpy(output, lfn_entries[i], VFAT_LFN_SIZE);
+            output += VFAT_LFN_SIZE;
+        }
+        res = 0;
+        has_lfn = false;
+        lfn_entries_count = 0;
+    }
+
+    return res;
 }
 
-size_t copy_long_name(uint16_t *dest, struct fat32_direntry_long* dir)
+void copy_long_name(char *dest, const struct fat32_direntry_long* dir)
 {
     assert(dir);
     assert(dest);
 
-    size_t len = 0;
-
-    clean_long_entry(dir);
-
     memcpy(dest, dir->name1, VFAT_LFN_NAME1_SIZE);
     dest += VFAT_LFN_NAME1_SIZE;
-    len += strlen((char *) dir->name1);
-
-    if (len < VFAT_LFN_NAME1_SIZE)
-    {
-        return len;
-    }
 
     memcpy(dest, dir->name2, VFAT_LFN_NAME2_SIZE);
     dest += VFAT_LFN_NAME2_SIZE;
-    len += strlen((char *) dir->name2);
-
-    if (len < VFAT_LFN_NAME2_SIZE + VFAT_LFN_NAME1_SIZE)
-    {
-        return len;
-    }
 
     memcpy(dest, dir->name3, VFAT_LFN_NAME3_SIZE);
-    len += strlen((char *) dir->name3);
-
-    return len;
 }
 
-void shift_long_name(uint16_t* name, size_t current_len)
+int read_lfn(const struct fat32_direntry_long *dir)
 {
-    int i;
+    size_t res = 0;
+    char *source;
+    char *source_saved;
+    char *dest;
+    char *dest_saved;
+    size_t insize = VFAT_LFN_SIZE;
+    size_t outsize = NAME_MAX;
 
-    assert(name);
+    iconv_utf16 = iconv_open("utf-8", "utf-16");
 
-    for (i = current_len - 1; i >= 0; i--)
-    {
-        name[i + VFAT_LFN_SIZE] = name[i];
-    }
+    dest_saved = dest = calloc(outsize, sizeof(char));
+    source_saved = source = calloc(insize, sizeof(char));
+
+    has_lfn = true;
+
+    copy_long_name(source, dir);
+
+    DEBUG_PRINT("%s\n", source);
+    DEBUG_PRINT("Iconv output size: %zd\n", outsize);
+    DEBUG_PRINT("Iconv input size: %zd\n", insize);
+
+    DEBUG_PRINT("Converting %zd bytes in UTF-8 using iconv...\n", insize);
+
+    res = iconv(iconv_utf16, (char **) &source, &insize,
+                (char **) &dest, &outsize);
+
+    assertf(res != (size_t) -1, "Iconv failed to convert characters: %s\n",
+            strerror(errno));
+
+    DEBUG_PRINT("Iconv left %zd bytes\n", insize);
+
+    memset(lfn_entries[lfn_entries_count], 0, NAME_MAX);
+    memcpy(lfn_entries[lfn_entries_count++], dest_saved, NAME_MAX - insize);
+
+    free(dest_saved);
+    free(source_saved);
+
+    return res;
 }

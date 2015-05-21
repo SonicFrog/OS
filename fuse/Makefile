@@ -1,6 +1,6 @@
 CC=gcc
 CFLAGS=-Wall -g -O0 -D_FILE_OFFSET_BITS=64 -Wextra -Wno-unused-parameter
-LDFLAGS=-lfuse
+LDFLAGS=-lfuse -lm
 
 .PHONY: all
 all:vfat

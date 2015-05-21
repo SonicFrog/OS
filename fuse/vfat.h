@@ -5,13 +5,31 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <stdbool.h>
+#include <iconv.h>
+#include <errno.h>
 
-#define FAT32_HEADER_LEN sizeof(struct fat_boot_header)
+#define DEBUG_PRINT(format, ...) printf("%s:%s:%d: " format, __FILE__,  \
+                                        __func__, __LINE__,  ##__VA_ARGS__)
+
+iconv_t iconv_utf16;
+
 #define FAT32_MIN_CLUSTERS_COUNT 65525
 #define FAT32_SIGNATURE 0xAA55
 #define FAT32_END_OF_CHAIN 0xFFFFFFF
 #define FAT32_DIRENTRY_SIZE 32
 #define FAT32_UNUSED_ENTRY 0xE5
+
+#define NAME_MAX 255
+
+#define VFAT_LFN_NAME1_SIZE (5 * 2)
+#define VFAT_LFN_NAME2_SIZE (6 * 2)
+#define VFAT_LFN_NAME3_SIZE (2 * 2)
+#define VFAT_LFN_SIZE VFAT_LFN_NAME1_SIZE + VFAT_LFN_NAME2_SIZE + \
+    VFAT_LFN_NAME3_SIZE
+
+#define PRINT_TAB(i, tab, size) for(i = 0; i < size; i++) { \
+        printf("%02X ", tab[i]); } printf("\n");
 
 // Boot sector
 struct fat_boot_header {
@@ -120,6 +138,19 @@ struct vfat_data vfat_info;
 uint32_t vfat_next_cluster(unsigned int c);
 int vfat_resolve(const char *path, struct stat *st);
 int vfat_fuse_getattr(const char *path, struct stat *st);
+inline int read_direntry_at(int fd, struct fat32_direntry *dest, off_t offs);
+inline bool is_lfn_entry_begin(const struct fat32_direntry *dir);
 ///
+
+#define IS_UNUSED(dir) ((dir).name[0] == 0x5E)
+
+#define IS_LFN_ENTRY(dir) (((dir)->attr & VFAT_ATTR_LFN) ==  VFAT_ATTR_LFN)
+
+#define HAS_MORE_DIRS(dir) (*((uint8_t *) dir) != 0x00)
+
+#define IS_DIRECTORY(dir) ((dir)->attr & VFAT_ATTR_DIR)
+
+
+#define DIRENTRY_SIZE sizeof(struct fat32_direntry)
 
 #endif
