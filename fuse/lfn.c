@@ -79,8 +79,6 @@ int read_lfn(const struct fat32_direntry_long *dir)
     size_t insize = VFAT_LFN_SIZE;
     size_t outsize = NAME_MAX;
 
-    iconv_utf16 = iconv_open("utf-8", "utf-16");
-
     dest_saved = dest = calloc(outsize, sizeof(char));
     source_saved = source = calloc(insize, sizeof(char));
 

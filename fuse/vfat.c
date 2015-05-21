@@ -303,7 +303,7 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
     uint32_t dir_count = 0;
     char real_name[NAME_MAX * sizeof(uint16_t) + 1];
     bool inside_lfn = false;
-    uint8_t csum;
+    uint8_t csum = -1;
 
     memset(&st, 0, sizeof(st));
     st.st_uid = vfat_info.mount_uid;
@@ -630,6 +630,7 @@ struct fuse_operations vfat_available_ops = {
 int main(int argc, char **argv)
 {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+    int res;
 
     fuse_opt_parse(&args, NULL, NULL, vfat_opt_args);
 
@@ -638,5 +639,9 @@ int main(int argc, char **argv)
 
     vfat_init(vfat_info.dev);
 
-    return (fuse_main(args.argc, args.argv, &vfat_available_ops, NULL));
+    res = fuse_main(args.argc, args.argv, &vfat_available_ops, NULL);
+
+    iconv_close(iconv_utf16);
+
+    return res;
 }
