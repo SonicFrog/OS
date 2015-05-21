@@ -12,7 +12,7 @@
 
 static bool has_lfn = false;
 static int lfn_entries_count = 0;
-static char lfn_entries[NAME_MAX][NAME_MAX];
+static char lfn_entries[NAME_MAX][13];
 
 uint8_t calc_csum(uint8_t const short_name[11])
 {
@@ -31,14 +31,22 @@ int get_lfn(char *output)
 {
     int res = -ENOENT;
     int i;
+    char *output_saved = output;
 
     if (has_lfn)
     {
+
+        DEBUG_PRINT("Moving %d lfn entries...\n", lfn_entries_count);
         for (i = lfn_entries_count - 1; i >= 0; i--)
         {
-            memcpy(output, lfn_entries[i], VFAT_LFN_SIZE);
-            output += VFAT_LFN_SIZE;
+            memcpy(output, lfn_entries[i], 13);
+            output+= 13;
         }
+
+        *output = '\0';
+
+        DEBUG_PRINT("LFN split %d: %s\n", lfn_entries_count, output_saved);
+
         res = 0;
         has_lfn = false;
         lfn_entries_count = 0;
@@ -80,19 +88,11 @@ int read_lfn(const struct fat32_direntry_long *dir)
 
     copy_long_name(source, dir);
 
-    DEBUG_PRINT("%s\n", source);
-    DEBUG_PRINT("Iconv output size: %zd\n", outsize);
-    DEBUG_PRINT("Iconv input size: %zd\n", insize);
-
-    DEBUG_PRINT("Converting %zd bytes in UTF-8 using iconv...\n", insize);
-
     res = iconv(iconv_utf16, (char **) &source, &insize,
                 (char **) &dest, &outsize);
 
     assertf(res != (size_t) -1, "Iconv failed to convert characters: %s\n",
             strerror(errno));
-
-    DEBUG_PRINT("Iconv left %zd bytes\n", insize);
 
     memset(lfn_entries[lfn_entries_count], 0, NAME_MAX);
     memcpy(lfn_entries[lfn_entries_count++], dest_saved, NAME_MAX - insize);

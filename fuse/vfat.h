@@ -9,8 +9,12 @@
 #include <iconv.h>
 #include <errno.h>
 
+#ifdef __DEBUG
 #define DEBUG_PRINT(format, ...) printf("%s:%s:%d: " format, __FILE__,  \
                                         __func__, __LINE__,  ##__VA_ARGS__)
+#else
+#define DEBUG_PRINT(format, ...)
+#endif
 
 iconv_t iconv_utf16;
 
@@ -144,7 +148,7 @@ inline bool is_lfn_entry_begin(const struct fat32_direntry *dir);
 
 #define IS_UNUSED(dir) ((dir).name[0] == 0x5E)
 
-#define IS_LFN_ENTRY(dir) (((dir)->attr & VFAT_ATTR_LFN) ==  VFAT_ATTR_LFN)
+#define IS_LFN_ENTRY(dir) (((dir)->attr & 0x3F) ==  VFAT_ATTR_LFN)
 
 #define HAS_MORE_DIRS(dir) (*((uint8_t *) dir) != 0x00)
 

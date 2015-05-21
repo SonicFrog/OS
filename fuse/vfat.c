@@ -342,7 +342,7 @@ int vfat_readdir(uint32_t first_cluster, fuse_fill_dir_t callback,
 
         DEBUG_PRINT("Tag: 0x%02x\n", (uint8_t) dir.name[0]);
 
-        if (is_valid_direntry(&dir) || is_lfn_entry_begin(&dir))
+        if (is_valid_direntry(&dir) || IS_LFN_ENTRY(&dir))
         {
             DEBUG_PRINT("Found: 0x%x\n", dir.attr);
 
